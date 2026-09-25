@@ -5,14 +5,75 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+import base64
+import hashlib
+import hmac
+import json
+import os
+import time
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
-import os
-from pathlib import Path
+from pydantic import BaseModel
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+token_scheme = HTTPBearer(auto_error=False)
+token_secret = os.getenv("APP_SECRET_KEY", "development-only-secret").encode()
+teachers_file = Path(__file__).parent / "teachers.json"
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+with teachers_file.open(encoding="utf-8") as file:
+    teachers = json.load(file)
+
+
+def create_token(username: str) -> str:
+    payload = {"sub": username, "exp": int(time.time()) + 8 * 60 * 60}
+    encoded_payload = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).rstrip(b"=")
+    signature = hmac.new(token_secret, encoded_payload, hashlib.sha256).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).rstrip(b"=")
+    return f"{encoded_payload.decode()}.{encoded_signature.decode()}"
+
+
+def get_current_teacher(
+    credentials: HTTPAuthorizationCredentials | None = Depends(token_scheme),
+) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        encoded_payload, encoded_signature = credentials.credentials.split(".")
+        signed_data = encoded_payload.encode()
+        expected_signature = hmac.new(
+            token_secret, signed_data, hashlib.sha256
+        ).digest()
+        provided_signature = base64.urlsafe_b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4)
+        )
+        if not hmac.compare_digest(provided_signature, expected_signature):
+            raise ValueError
+
+        payload = json.loads(
+            base64.urlsafe_b64decode(
+                encoded_payload + "=" * (-len(encoded_payload) % 4)
+            )
+        )
+        if payload["exp"] <= time.time() or payload["sub"] not in teachers:
+            raise ValueError
+        return payload["sub"]
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -88,8 +149,18 @@ def get_activities():
     return activities
 
 
+@app.post("/login")
+def login(request: LoginRequest):
+    password = teachers.get(request.username)
+    if password is None or not hmac.compare_digest(password, request.password):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return {"access_token": create_token(request.username), "token_type": "bearer"}
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(
+    activity_name: str, email: str, _: str = Depends(get_current_teacher)
+):
     """Sign up a student for an activity"""
     # Validate activity exists
     if activity_name not in activities:
@@ -111,7 +182,9 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(
+    activity_name: str, email: str, _: str = Depends(get_current_teacher)
+):
     """Unregister a student from an activity"""
     # Validate activity exists
     if activity_name not in activities:
