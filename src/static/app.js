@@ -2,7 +2,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitiesList = document.getElementById("activities-list");
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
+  const loginForm = document.getElementById("login-form");
+  const logoutButton = document.getElementById("logout-button");
+  const signupContainer = document.getElementById("signup-container");
   const messageDiv = document.getElementById("message");
+  let accessToken = sessionStorage.getItem("accessToken");
+
+  function authenticatedHeaders() {
+    return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+  }
+
+  function updateAuthenticationUI() {
+    loginForm.classList.toggle("hidden", Boolean(accessToken));
+    logoutButton.classList.toggle("hidden", !accessToken);
+    signupForm.classList.toggle("hidden", !accessToken);
+  }
 
   // Function to fetch activities from API
   async function fetchActivities() {
@@ -28,10 +42,12 @@ document.addEventListener("DOMContentLoaded", () => {
               <h5>Participants:</h5>
               <ul class="participants-list">
                 ${details.participants
-                  .map(
-                    (email) =>
-                      `<li><span class="participant-email">${email}</span><button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button></li>`
-                  )
+                  .map((email) => {
+                    const deleteButton = accessToken
+                      ? `<button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button>`
+                      : "";
+                    return `<li><span class="participant-email">${email}</span>${deleteButton}</li>`;
+                  })
                   .join("")}
               </ul>
             </div>`
@@ -80,6 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/unregister?email=${encodeURIComponent(email)}`,
         {
           method: "DELETE",
+          headers: authenticatedHeaders(),
         }
       );
 
@@ -91,6 +108,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Refresh activities list to show updated participants
         fetchActivities();
+      } else if (response.status === 401) {
+        accessToken = null;
+        sessionStorage.removeItem("accessToken");
+        updateAuthenticationUI();
       } else {
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
@@ -124,6 +145,7 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/signup?email=${encodeURIComponent(email)}`,
         {
           method: "POST",
+          headers: authenticatedHeaders(),
         }
       );
 
@@ -136,6 +158,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Refresh activities list to show updated participants
         fetchActivities();
+      } else if (response.status === 401) {
+        accessToken = null;
+        sessionStorage.removeItem("accessToken");
+        updateAuthenticationUI();
       } else {
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
@@ -155,6 +181,43 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const username = document.getElementById("username").value;
+    const password = document.getElementById("password").value;
+
+    try {
+      const response = await fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Login failed");
+      }
+
+      accessToken = result.access_token;
+      sessionStorage.setItem("accessToken", accessToken);
+      loginForm.reset();
+      updateAuthenticationUI();
+      fetchActivities();
+    } catch (error) {
+      messageDiv.textContent = error.message;
+      messageDiv.className = "error";
+      messageDiv.classList.remove("hidden");
+    }
+  });
+
+  logoutButton.addEventListener("click", () => {
+    accessToken = null;
+    sessionStorage.removeItem("accessToken");
+    updateAuthenticationUI();
+    fetchActivities();
+  });
+
   // Initialize app
+  updateAuthenticationUI();
   fetchActivities();
 });
